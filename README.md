@@ -1,12 +1,15 @@
 # ⚡ Neural Forge — AI Coding Assistant
 
-> A full-stack, AI-powered developer cockpit for debugging, explaining, optimizing, and documenting code — built for **Software Engineering Intern** roles at AI-forward companies like **Demandbase**.
+> A full-stack, AI-powered developer cockpit for debugging, explaining, optimizing, and documenting code
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-2.0-green?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Streamlit](https://img.shields.io/badge/Streamlit-UI-red?logo=streamlit)](https://streamlit.io)
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue?logo=docker)](https://docker.com)
 [![Gemini](https://img.shields.io/badge/Gemini-1.5--Flash-yellow)](https://aistudio.google.com)
+[![Live Demo](https://img.shields.io/badge/Live-Demo-Streamlit-FF4B4B?logo=streamlit)](https://neuralforge-aicodingassistant-7ukfwnccth79mgreuwa9sd.streamlit.app/)
+[![API](https://img.shields.io/badge/API-Render-46E3B7)](https://neuralforge-ai-coding-assistant.onrender.com/docs)
+
 
 ---
 
@@ -18,7 +21,7 @@
 | Clean, maintainable code | Modular backend/frontend, structured prompts, logging |
 | AI/LLM prototypes & tooling | Gemini integration for real dev workflows (debug, refactor, docs) |
 | AI-assisted development | Uses Cursor/Copilot-style workflows; built with AI pair programming |
-| Cloud & containerization | Docker multi-stage build + Compose orchestration |
+| Cloud & containerization | Docker Compose locally; **Streamlit Cloud** + **Render** in production |
 | Experimentation mindset | Multiple AI features: chat, repo scan, complexity, commits |
 
 ---
@@ -46,14 +49,15 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Browser (Streamlit UI)                       │
-│              Neural Forge · Port 8501 · Particle UI              │
+│          Streamlit Community Cloud (Production UI)               │
+│   neuralforge-aicodingassistant-*.streamlit.app                  │
 └────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP/JSON
+                             │ HTTP/JSON  (BACKEND_URL secret)
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   FastAPI Backend · Port 8000                    │
-│         Pydantic models · CORS · Swagger /docs · Logging         │
+│              Render — FastAPI Backend (Production API)           │
+│   neuralforge-ai-coding-assistant.onrender.com · /docs · /health │
+│         Pydantic · CORS · Swagger · Logging · Health checks        │
 └────────────────────────────┬────────────────────────────────────┘
                              │ google-generativeai SDK
                              ▼
@@ -75,8 +79,8 @@
 ### 1. Clone & configure
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ai-coding-assistant.git
-cd ai-coding-assistant
+git clone https://github.com/bhavyajain0810/NeuralForge-AI_Coding_Assistant.git
+cd NeuralForge-AI_Coding_Assistant
 cp backend/.env.example backend/.env
 # Edit backend/.env → paste GEMINI_API_KEY
 ```
@@ -112,7 +116,7 @@ streamlit run app.py
 ## 📁 Project Structure
 
 ```
-ai-coding-assistant/
+NeuralForge-AI_Coding_Assistant/
 ├── backend/
 │   ├── main.py              # FastAPI — all REST endpoints
 │   ├── requirements.txt
@@ -121,6 +125,10 @@ ai-coding-assistant/
 │   ├── app.py               # Neural Forge Streamlit UI
 │   ├── styles.py            # Cyberpunk CSS + particles
 │   └── requirements.txt
+├── streamlit_app.py         # Streamlit Cloud entry point
+├── requirements.txt         # Root deps for Streamlit Cloud
+├── render.yaml              # Render Blueprint config
+├── DEPLOY.md                # Deployment guide
 ├── Dockerfile               # Multi-stage (backend + frontend)
 ├── docker-compose.yml       # Health checks + networking
 ├── .gitignore
@@ -131,22 +139,31 @@ ai-coding-assistant/
 
 ## 🔌 API Examples
 
+### Production (Render)
+
 ```bash
 # Health check
-curl http://localhost:8000/health
+curl https://neuralforge-ai-coding-assistant.onrender.com/health
 
 # Explain code
-curl -X POST http://localhost:8000/explain \
+curl -X POST https://neuralforge-ai-coding-assistant.onrender.com/explain \
   -H "Content-Type: application/json" \
   -d '{"code": "def add(a,b): return a+b", "task": "Explain", "language": "Python"}'
+```
 
-# Chat about code
+Interactive docs: **[https://neuralforge-ai-coding-assistant.onrender.com/docs](https://neuralforge-ai-coding-assistant.onrender.com/docs)**
+
+### Local
+
+```bash
+curl http://localhost:8000/health
+
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"code": "x = [1,2,3]", "question": "What is the time complexity of copying this list?"}'
 ```
 
-Interactive docs: **http://localhost:8000/docs**
+Local Swagger: **http://localhost:8000/docs**
 
 ---
 
@@ -158,39 +175,28 @@ Interactive docs: **http://localhost:8000/docs**
 | Frontend | Streamlit, custom CSS, HTML5 canvas particles |
 | AI | Google Gemini 1.5 Flash (`google-generativeai`) |
 | DevOps | Docker, Docker Compose, health checks |
+| Deployment | [Streamlit Community Cloud](https://streamlit.io/cloud) (UI), [Render](https://render.com) (API) |
 | API style | REST, OpenAPI/Swagger, multipart upload |
-
----
-
-## 📄 Resume bullet points
-
-Use these on your resume / cover letter:
-
-- Built a **full-stack AI coding assistant** with **FastAPI** REST APIs and **Streamlit** UI, integrating **Google Gemini** for code explanation, debugging, refactoring, and documentation generation.
-- Designed **11+ production-style API endpoints** with Pydantic validation, CORS, structured logging, and **Swagger/OpenAPI** documentation.
-- **Containerized** the application with **Docker Compose**, including health checks and multi-service orchestration.
-- Implemented **multi-file repo analysis**, file upload, Big-O complexity analysis, and **Conventional Commit** message generation.
 
 ---
 
 ## 🌐 Deploy
 
-| Service | Platform |
-|---|---|
-| Frontend | [Streamlit Community Cloud](https://streamlit.io/cloud) — set `BACKEND_URL` |
-| Backend | [Render](https://render.com) or [Railway](https://railway.app) |
+| Service | Platform | URL / config |
+|---|---|---|
+| **Frontend** | [Streamlit Community Cloud](https://streamlit.io/cloud) | [Live app](https://neuralforge-aicodingassistant-7ukfwnccth79mgreuwa9sd.streamlit.app/) · Main file: `streamlit_app.py` · Secret: `BACKEND_URL` |
+| **Backend** | [Render](https://render.com) | [API](https://neuralforge-ai-coding-assistant.onrender.com) · Env: `GEMINI_API_KEY` |
+
+Full step-by-step instructions: **[DEPLOY.md](DEPLOY.md)**
 
 ---
 
-## 📈 Roadmap
+## 🔗 Live Demo
 
-- [ ] LangChain agent chains for multi-step reasoning
-- [ ] ChromaDB semantic code search
-- [ ] GitHub API — PR analysis & auto-review
-- [ ] JWT auth + rate limiting
-
----
-
-## 📄 License
-
-MIT
+| | Link |
+|--|------|
+| **App (UI)** | [neuralforge-aicodingassistant.streamlit.app](https://neuralforge-aicodingassistant-7ukfwnccth79mgreuwa9sd.streamlit.app/) |
+| **API** | [neuralforge-ai-coding-assistant.onrender.com](https://neuralforge-ai-coding-assistant.onrender.com) |
+| **Swagger** | [/docs](https://neuralforge-ai-coding-assistant.onrender.com/docs) |
+| **Health** | [/health](https://neuralforge-ai-coding-assistant.onrender.com/health) |
+| **GitHub** | [NeuralForge-AI_Coding_Assistant](https://github.com/bhavyajain0810/NeuralForge-AI_Coding_Assistant) |
