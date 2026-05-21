@@ -11,8 +11,15 @@ import streamlit.components.v1 as components
 
 from styles import GLOBAL_CSS, PARTICLE_HTML, HERO_HTML, FEATURE_GRID_HTML
 
-# ── Config ──────────────────────────────────────────────────────
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+def get_backend_url() -> str:
+    """Streamlit Cloud secrets → env var → localhost."""
+    try:
+        if "BACKEND_URL" in st.secrets:
+            return str(st.secrets["BACKEND_URL"]).rstrip("/")
+    except Exception:
+        pass
+    return os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 
 FEATURES = {
     "home": {"label": "🏠 Command Center", "icon": "🏠"},
@@ -58,6 +65,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+BACKEND_URL = get_backend_url()
 
 st.markdown(f"<style>{GLOBAL_CSS}</style>", unsafe_allow_html=True)
 components.html(PARTICLE_HTML, height=0)
