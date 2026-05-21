@@ -10,11 +10,9 @@
 
 ---
 
-## 🎯 Why this project (JD-aligned)
+## 🎯 Why this project
 
-Built to demonstrate skills from **Demandbase Software Engineering Intern** requirements:
-
-| JD Requirement | How this project demonstrates it |
+| Function | How this project demonstrates it |
 |---|---|
 | Scalable applications & services | FastAPI REST API with 11+ endpoints, Pydantic validation, health checks |
 | Clean, maintainable code | Modular backend/frontend, structured prompts, logging |
