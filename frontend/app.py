@@ -1,63 +1,97 @@
-"""
-Neural Forge — AI Coding Assistant
-A cinematic Streamlit cockpit wired to FastAPI + Gemini.
-"""
+"""Neural Forge Streamlit frontend."""
+
+from __future__ import annotations
 
 import os
 import time
-import requests
+from typing import Any
+
 import streamlit as st
-import streamlit.components.v1 as components
 
-from styles import GLOBAL_CSS, PARTICLE_HTML, HERO_HTML, FEATURE_GRID_HTML
+from api_client import APIClientError, NeuralForgeClient
+from styles import FEATURE_GRID_HTML, GLOBAL_CSS, HERO_HTML
 
-
-def get_backend_url() -> str:
-    """Streamlit Cloud secrets → env var → localhost."""
-    try:
-        if "BACKEND_URL" in st.secrets:
-            return str(st.secrets["BACKEND_URL"]).rstrip("/")
-    except Exception:
-        pass
-    return os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+MAX_CODE_CHARS = 50_000
+MAX_DIFF_CHARS = 30_000
+MAX_UPLOAD_BYTES = 200_000
 
 FEATURES = {
-    "home": {"label": "🏠 Command Center", "icon": "🏠"},
-    "explain": {"label": "🔍 Explain Code", "icon": "🔍", "endpoint": "/explain"},
-    "debug": {"label": "🐛 Debug Code", "icon": "🐛", "endpoint": "/debug"},
-    "optimize": {"label": "⚡ Optimize", "icon": "⚡", "endpoint": "/optimize"},
-    "refactor": {"label": "🔧 Refactor", "icon": "🔧", "endpoint": "/refactor"},
-    "chat": {"label": "💬 Ask AI", "icon": "💬", "endpoint": "/chat"},
-    "readme": {"label": "📄 README", "icon": "📄", "endpoint": "/generate-readme"},
-    "commit": {"label": "📝 Commits", "icon": "📝", "endpoint": "/commit-message"},
-    "complexity": {"label": "📊 Big-O", "icon": "📊", "endpoint": "/complexity"},
-    "repo": {"label": "🗂️ Repo Scan", "icon": "🗂️", "endpoint": "/repo-summary"},
-    "upload": {"label": "📁 Upload", "icon": "📁", "endpoint": "/upload-snippet"},
+    "home": "⚡ Command Center",
+    "explain": "🔍 Explain Code",
+    "debug": "🐛 Debug Code",
+    "optimize": "🚀 Optimize",
+    "refactor": "🛠️ Refactor",
+    "chat": "💬 Ask AI",
+    "readme": "📄 README",
+    "commit": "📝 Commits",
+    "complexity": "📊 Big-O",
+    "repo": "🗂️ Repo Scan",
+    "upload": "📁 Upload",
 }
 
 LANGUAGES = [
-    "auto-detect", "Python", "JavaScript", "TypeScript", "Java",
-    "Go", "C++", "C", "Rust", "SQL", "Shell", "Scala",
+    "auto-detect",
+    "Python",
+    "JavaScript",
+    "TypeScript",
+    "Java",
+    "Go",
+    "C++",
+    "C",
+    "Rust",
+    "SQL",
+    "Shell",
+    "Scala",
 ]
 
 SAMPLES = {
-    "Python — Buggy Fibonacci": '''def fib(n):
+    "Python — recursive Fibonacci": """def fib(n):
     if n <= 1:
         return n
-    return fib(n-1) + fib(n-2)
+    return fib(n - 1) + fib(n - 2)
 
-print(fib(10))''',
-    "JavaScript — Async bug": '''async function fetchUser(id) {
-  const res = fetch(`https://api.example.com/users/${id}`);
-  return res.json();
-}''',
-    "Python — Needs refactor": '''def p(d):
-    r=[]
-    for k,v in d.items():
-        if v>0:
-            r.append(k)
-    return r''',
+print(fib(10))""",
+    "JavaScript — async bug": """async function fetchUser(id) {
+  const response = fetch(`https://api.example.com/users/${id}`);
+  return response.json();
+}""",
+    "Python — refactoring candidate": """def p(data):
+    result = []
+    for key, value in data.items():
+        if value > 0:
+            result.append(key)
+    return result""",
 }
+
+CODE_TASKS = {
+    "explain": {
+        "title": "Explain code",
+        "description": "Get a plain-language walkthrough, key concepts, and an example use case.",
+        "button": "Explain code",
+        "endpoint": "/explain",
+        "history": "Explain",
+    },
+    "debug": {
+        "title": "Debug code",
+        "description": "Identify likely defects, understand root causes, and get a corrected version.",
+        "button": "Find and fix issues",
+        "endpoint": "/debug",
+        "history": "Debug",
+    },
+    "optimize": {
+        "title": "Optimize code",
+        "description": "Review performance, memory use, maintainability, and relevant trade-offs.",
+        "button": "Optimize code",
+        "endpoint": "/optimize",
+        "history": "Optimize",
+    },
+}
+
+
+def get_backend_url() -> str:
+    """Resolve the API URL from the environment without displaying its value."""
+    return os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+
 
 st.set_page_config(
     page_title="Neural Forge | AI Coding Assistant",
@@ -65,385 +99,675 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+st.markdown(f"<style>{GLOBAL_CSS}</style>", unsafe_allow_html=True)
 
 BACKEND_URL = get_backend_url()
+client = NeuralForgeClient(BACKEND_URL)
 
-st.markdown(f"<style>{GLOBAL_CSS}</style>", unsafe_allow_html=True)
-components.html(PARTICLE_HTML, height=0)
-
-# ── Session state ───────────────────────────────────────────────
 if "page" not in st.session_state:
     st.session_state.page = "home"
 if "history" not in st.session_state:
     st.session_state.history = []
-if "last_response" not in st.session_state:
-    st.session_state.last_response = None
+if "responses" not in st.session_state:
+    st.session_state.responses = {}
 
 
-def inject_hero():
-    st.markdown(HERO_HTML, unsafe_allow_html=True)
-
-
-def backend_status() -> tuple[bool, dict]:
+@st.cache_data(ttl=20, show_spinner=False)
+def backend_status(base_url: str) -> tuple[bool, dict[str, Any]]:
+    """Return backend reachability and health details."""
     try:
-        r = requests.get(f"{BACKEND_URL}/health", timeout=3)
-        return r.status_code == 200, r.json()
-    except Exception:
+        return True, NeuralForgeClient(base_url).health()
+    except APIClientError:
         return False, {}
 
 
-def post(endpoint: str, payload: dict, timeout: int = 90) -> str | None:
-    try:
-        resp = requests.post(f"{BACKEND_URL}{endpoint}", json=payload, timeout=timeout)
-        resp.raise_for_status()
-        return resp.json().get("response", "No response received.")
-    except requests.exceptions.ConnectionError:
-        st.error("Cannot reach backend. Start it with: `uvicorn main:app --reload` in `backend/`")
-    except requests.exceptions.Timeout:
-        st.error("Request timed out — try a smaller snippet.")
-    except requests.exceptions.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.response.json().get("detail", str(e))
-        except Exception:
-            detail = str(e)
-        st.error(f"API error: {detail}")
-    except Exception as e:
-        st.error(f"Error: {e}")
-    return None
+def page_heading(title: str, description: str) -> None:
+    st.markdown(
+        f"""
+        <div class="nf-page-heading">
+          <div class="nf-page-kicker">Neural module // developer workspace</div>
+          <h2>{title}</h2>
+          <p>{description}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
-def add_history(feature: str, chars: int, elapsed: float):
-    st.session_state.history.insert(0, {
-        "feature": feature,
-        "chars": chars,
-        "elapsed": elapsed,
-        "time": time.strftime("%H:%M:%S"),
-    })
+def load_sample(prefix: str) -> None:
+    sample_name = st.session_state.get(f"{prefix}_sample")
+    if sample_name in SAMPLES:
+        st.session_state[f"{prefix}_code"] = SAMPLES[sample_name]
+
+
+def code_workspace(prefix: str, height: int = 285) -> tuple[str, str]:
+    """Render a consistent code editor and its controls."""
+    code_key = f"{prefix}_code"
+    if code_key not in st.session_state:
+        st.session_state[code_key] = ""
+
+    language_column, sample_column = st.columns([1, 2])
+    with language_column:
+        language = st.selectbox("Language", LANGUAGES, key=f"{prefix}_language")
+    with sample_column:
+        st.selectbox(
+            "Load an example",
+            ["Choose an example…", *SAMPLES],
+            key=f"{prefix}_sample",
+            on_change=load_sample,
+            args=(prefix,),
+        )
+
+    code = st.text_area(
+        "Source code",
+        key=code_key,
+        height=height,
+        placeholder=(
+            "Paste the code you want Neural Forge to review. "
+            "Include enough surrounding context for a useful answer."
+        ),
+        help=f"Maximum {MAX_CODE_CHARS:,} characters.",
+    )
+    st.caption(f"{len(code):,} / {MAX_CODE_CHARS:,} characters")
+    return code, language
+
+
+def validate_text(
+    value: str,
+    label: str,
+    max_chars: int = MAX_CODE_CHARS,
+) -> bool:
+    cleaned = value.strip()
+    if not cleaned:
+        st.warning(f"Add {label} before submitting.")
+        return False
+    if len(cleaned) > max_chars:
+        st.warning(
+            f"{label.capitalize()} is too long "
+            f"({len(cleaned):,} characters). The limit is {max_chars:,}."
+        )
+        return False
+    return True
+
+
+def show_api_error(error: APIClientError) -> None:
+    if error.kind == "unreachable":
+        st.error("Backend unavailable", icon="🔌")
+        st.caption(
+            f"{error.message} For local development, run "
+            "`uvicorn backend.main:app --reload` from the repository root."
+        )
+    elif error.kind == "configuration":
+        st.error("AI service is not configured", icon="🔑")
+        st.caption(
+            f"{error.message} Set `GEMINI_API_KEY` in `backend/.env` locally "
+            "or in the backend host's environment."
+        )
+    elif error.kind == "timeout":
+        st.error("The AI request took too long", icon="⏱️")
+        st.caption(error.message)
+    elif error.kind == "provider":
+        st.error("Gemini could not complete the request", icon="🛰️")
+        st.caption(error.message)
+    else:
+        st.error("The request could not be completed", icon="⚠️")
+        st.caption(error.message)
+
+
+def add_history(feature: str, input_chars: int, elapsed: float) -> None:
+    st.session_state.history.insert(
+        0,
+        {
+            "feature": feature,
+            "chars": input_chars,
+            "elapsed": elapsed,
+            "time": time.strftime("%H:%M"),
+        },
+    )
     st.session_state.history = st.session_state.history[:8]
 
 
-def render_terminal_response(text: str, title: str = "NEURAL OUTPUT"):
-    st.markdown(
-        f"""
-        <div class="terminal-header">
-            <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-            {title}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.container():
-        st.markdown(text)
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.download_button("⬇️ Download .md", text, file_name="neural_forge_output.md", use_container_width=True)
-    with col2:
-        if st.button("📋 Copy hint", use_container_width=True):
-            st.info("Use the download button or select text from the markdown block above.")
-    with col3:
-        st.caption(f"{len(text):,} chars · ~{len(text.split())} words")
+def save_response(
+    key: str,
+    title: str,
+    text: str,
+    elapsed: float,
+    input_chars: int,
+) -> None:
+    st.session_state.responses[key] = {
+        "title": title,
+        "text": text,
+        "elapsed": elapsed,
+        "input_chars": input_chars,
+    }
 
 
-def run_analysis(endpoint: str, payload: dict, feature_name: str, code_len: int):
-    progress = st.progress(0, text="Initializing neural link...")
-    for i in range(25, 100, 25):
-        time.sleep(0.08)
-        progress.progress(i, text=f"Gemini processing... {i}%")
-    t0 = time.time()
-    result = post(endpoint, payload)
-    elapsed = round(time.time() - t0, 2)
-    progress.progress(100, text="Complete!")
-    progress.empty()
-    if result:
-        st.session_state.last_response = result
-        add_history(feature_name, code_len, elapsed)
-        st.success(f"Analysis complete in **{elapsed}s**")
-        render_terminal_response(result)
+def run_analysis(
+    key: str,
+    endpoint: str,
+    payload: dict[str, Any],
+    title: str,
+    input_chars: int,
+) -> str | None:
+    started_at = time.perf_counter()
+    try:
+        with st.spinner("Generating a structured response…"):
+            result = client.analyze(endpoint, payload)
+    except APIClientError as error:
+        show_api_error(error)
+        return None
+
+    elapsed = round(time.perf_counter() - started_at, 2)
+    save_response(key, title, result, elapsed, input_chars)
+    add_history(title, input_chars, elapsed)
     return result
 
 
-def code_workspace(key_prefix: str, default_height: int = 320) -> tuple[str, str]:
-    col_code, col_meta = st.columns([4, 1])
-    with col_meta:
-        lang = st.selectbox("Language", LANGUAGES, key=f"{key_prefix}_lang")
-        st.markdown('<div class="glass-panel"><h3>⚡ QUICK LOAD</h3></div>', unsafe_allow_html=True)
-        sample_name = st.selectbox("Samples", ["—"] + list(SAMPLES.keys()), key=f"{key_prefix}_sample")
-    with col_code:
-        default = SAMPLES.get(sample_name, "") if sample_name != "—" else ""
-        code = st.text_area(
-            "Code input",
-            value=default,
-            height=default_height,
-            placeholder="# Paste your code here — the forge awaits...",
-            key=f"{key_prefix}_code",
-            label_visibility="collapsed",
+def run_upload(
+    key: str,
+    filename: str,
+    content: bytes,
+    task: str,
+    input_chars: int,
+) -> str | None:
+    started_at = time.perf_counter()
+    try:
+        with st.spinner("Uploading and analyzing the file…"):
+            result = client.upload(filename, content, task)
+    except APIClientError as error:
+        show_api_error(error)
+        return None
+
+    elapsed = round(time.perf_counter() - started_at, 2)
+    save_response(key, f"Analysis of {filename}", result, elapsed, input_chars)
+    add_history(f"Upload: {filename}", input_chars, elapsed)
+    return result
+
+
+def render_response(key: str) -> None:
+    response = st.session_state.responses.get(key)
+    if not response:
+        return
+
+    st.divider()
+    with st.container(border=True):
+        st.markdown(
+            '<div class="nf-response-title">'
+            '<span class="nf-response-dot"></span>AI response</div>',
+            unsafe_allow_html=True,
         )
-    return code, lang
+        st.markdown(response["text"])
+        st.caption(
+            f"{response['title']} · {response['elapsed']:.2f}s · "
+            f"{len(response['text']):,} output characters"
+        )
+
+        download_column, raw_column = st.columns([1, 2])
+        with download_column:
+            st.download_button(
+                "Download as Markdown",
+                response["text"],
+                file_name=f"neural-forge-{key}.md",
+                mime="text/markdown",
+                key=f"{key}_download",
+                use_container_width=True,
+            )
+        with raw_column:
+            with st.expander("Copy-friendly raw output"):
+                st.code(response["text"], language="markdown")
 
 
-# ── Sidebar ─────────────────────────────────────────────────────
+def render_standard_code_task(key: str) -> None:
+    task = CODE_TASKS[key]
+    page_heading(task["title"], task["description"])
+    code, language = code_workspace(key)
+    if st.button(
+        task["button"],
+        type="primary",
+        use_container_width=True,
+        key=f"{key}_submit",
+    ):
+        if validate_text(code, "source code"):
+            run_analysis(
+                key,
+                task["endpoint"],
+                {"code": code.strip(), "task": task["history"], "language": language},
+                task["history"],
+                len(code.strip()),
+            )
+    render_response(key)
+
+
+online, health = backend_status(BACKEND_URL)
+api_configured = bool(health.get("api_configured")) if online else False
+
 with st.sidebar:
     st.markdown(
         """
-        <div style="text-align:center;padding:12px 0;">
-            <div style="font-family:Orbitron;font-size:1.1rem;font-weight:700;
-                background:linear-gradient(90deg,#00f5ff,#a855f7);
-                -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
-                ⚡ NEURAL FORGE
-            </div>
-            <div style="font-family:JetBrains Mono;font-size:0.65rem;color:#64748b;margin-top:4px;">
-                v2.0 · AI DEV COCKPIT
-            </div>
+        <div class="nf-side-brand">
+          <div class="nf-side-logo"><span>⚡</span> NEURAL FORGE</div>
+          <div class="nf-side-sub">AI developer command center</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.divider()
 
-    online, health = backend_status()
-    if online:
-        model = health.get("model", "gemini")
+    if online and api_configured:
         st.markdown(
-            f'<div class="status-online"><span class="pulse"></span> ONLINE · {model}</div>',
+            '<span class="nf-status online">Backend ready</span>',
+            unsafe_allow_html=True,
+        )
+    elif online:
+        st.markdown(
+            '<span class="nf-status degraded">API key needed</span>',
             unsafe_allow_html=True,
         )
     else:
-        st.markdown('<div class="status-offline">● OFFLINE</div>', unsafe_allow_html=True)
-        st.caption(f"Expected: `{BACKEND_URL}`")
+        st.markdown(
+            '<span class="nf-status offline">Backend offline</span>',
+            unsafe_allow_html=True,
+        )
+
+    if online:
+        st.caption(f"Active model: `{health.get('model', 'Not reported')}`")
+    else:
+        st.caption("Start the API or check `BACKEND_URL`.")
+
+    if st.button("Refresh status", use_container_width=True):
+        backend_status.clear()
+        st.rerun()
+
+    st.markdown('<div class="nf-section-label">Developer modules</div>', unsafe_allow_html=True)
+    labels = list(FEATURES.values())
+    keys = list(FEATURES)
+    selected_index = keys.index(st.session_state.page)
+    selected_label = st.radio(
+        "Choose a task",
+        labels,
+        index=selected_index,
+    )
+    st.session_state.page = keys[labels.index(selected_label)]
 
     st.divider()
+    with st.expander("How to use Neural Forge", expanded=False):
+        st.markdown(
+            "1. Choose a task.\n"
+            "2. Select a language or use auto-detect.\n"
+            "3. Paste focused code and relevant context.\n"
+            "4. Review the answer before applying changes."
+        )
 
-    labels = [FEATURES[k]["label"] for k in FEATURES]
-    keys = list(FEATURES.keys())
-    idx = keys.index(st.session_state.page) if st.session_state.page in keys else 0
-    choice = st.radio("Navigate", labels, index=idx, label_visibility="collapsed")
-    st.session_state.page = keys[labels.index(choice)]
-
-    st.divider()
-    st.markdown("**Stack**")
+    st.markdown("**Runtime & settings**")
     st.caption("FastAPI · Streamlit · Gemini · Docker")
-    st.link_button("📚 API Docs", f"{BACKEND_URL}/docs", use_container_width=True)
+    st.caption(f"Input limit: `{MAX_CODE_CHARS:,} chars` · Timeout: `{client.timeout}s`")
+    st.link_button("Open API documentation", f"{BACKEND_URL}/docs", use_container_width=True)
 
     if st.session_state.history:
         st.divider()
-        st.markdown("**Recent runs**")
-        for h in st.session_state.history[:5]:
-            st.caption(f"`{h['time']}` {h['feature']} · {h['elapsed']}s")
+        st.markdown("**Recent activity**")
+        for item in st.session_state.history[:5]:
+            st.caption(
+                f"`{item['time']}` {item['feature']} · "
+                f"{item['chars']:,} chars · {item['elapsed']:.1f}s"
+            )
 
 
-# ── Main content ────────────────────────────────────────────────
 page = st.session_state.page
 
 if page == "home":
-    inject_hero()
+    st.markdown(HERO_HTML, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="nf-section-label">Developer tool matrix</div>',
+        unsafe_allow_html=True,
+    )
     st.markdown(FEATURE_GRID_HTML, unsafe_allow_html=True)
 
-    online, health = backend_status()
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("API Status", "LIVE" if online else "DOWN")
-    c2.metric("Model", health.get("model", "—") if online else "—")
-    c3.metric("Endpoints", "11+" if online else "0")
-    c4.metric("Session Runs", len(st.session_state.history))
+    status_label = (
+        "Ready"
+        if online and api_configured
+        else "Key needed"
+        if online
+        else "Offline"
+    )
+    metric_1, metric_2, metric_3, metric_4 = st.columns(4)
+    metric_1.metric("API status", status_label)
+    metric_2.metric("Active model", health.get("model", "—") if online else "—")
+    metric_3.metric("REST endpoints", "11")
+    metric_4.metric("Session runs", len(st.session_state.history))
 
-    st.markdown('<div class="glass-panel"><h3>🎯 BUILT FOR AI-ENGINEERING ROLES</h3></div>', unsafe_allow_html=True)
-    st.markdown("""
-    **Neural Forge** is a full-stack AI developer tool demonstrating:
+    st.markdown(
+        '<div class="nf-section-label">Engineering dashboard</div>',
+        unsafe_allow_html=True,
+    )
+    architecture_column, workflow_column, delivery_column = st.columns(3)
+    with architecture_column:
+        with st.container(border=True):
+            st.markdown("#### API engineering")
+            st.markdown(
+                "Typed request validation, response contracts, health reporting, "
+                "file limits, and documented REST endpoints."
+            )
+    with workflow_column:
+        with st.container(border=True):
+            st.markdown("#### AI workflows")
+            st.markdown(
+                "Gemini-backed explanation, debugging, optimization, refactoring, "
+                "documentation, and repository analysis."
+            )
+    with delivery_column:
+        with st.container(border=True):
+            st.markdown("#### Delivery ready")
+            st.markdown(
+                "Separate frontend and backend services, Docker Compose orchestration, "
+                "deployment manifests, and runtime status visibility."
+            )
 
-    - **REST API design** with FastAPI, Pydantic validation, Swagger docs, and CORS
-    - **LLM integration** via Google Gemini for real-world dev workflows
-    - **Containerized deployment** with Docker Compose and health checks
-    - **AI-assisted productivity** — explain, debug, optimize, refactor, document, and analyze code
+    if not online:
+        st.info(
+            "The interface is available, but AI tasks need the backend. "
+            "Run `uvicorn backend.main:app --reload` and refresh the status.",
+            icon="ℹ️",
+        )
+    elif not api_configured:
+        st.warning(
+            "The backend is running without a Gemini API key. "
+            "Add `GEMINI_API_KEY` to `backend/.env`, then restart the API.",
+            icon="🔑",
+        )
 
-    Pick a module from the sidebar to begin. Paste code, upload files, or scan a mini-repo.
-    """)
+    with st.expander("Local developer launch commands"):
+        st.code("uvicorn backend.main:app --reload", language="bash")
+        st.code("streamlit run streamlit_app.py", language="bash")
 
-    st.markdown("### 🚀 Quick start")
-    st.code("cd backend && uvicorn main:app --reload", language="bash")
-    st.code("cd frontend && streamlit run app.py", language="bash")
-    st.code("docker-compose up --build", language="bash")
+    if st.session_state.responses:
+        latest_key = next(reversed(st.session_state.responses))
+        st.markdown(
+            '<div class="nf-section-label">Latest neural output</div>',
+            unsafe_allow_html=True,
+        )
+        render_response(latest_key)
 
-    if st.session_state.last_response:
-        st.divider()
-        st.subheader("Last AI output")
-        with st.expander("View", expanded=False):
-            st.markdown(st.session_state.last_response)
-
-elif page == "explain":
-    inject_hero()
-    st.markdown("### 🔍 Code Explainer")
-    st.caption("Plain-English walkthrough with concepts and examples.")
-    code, lang = code_workspace("explain")
-    if st.button("⚡ EXPLAIN CODE", type="primary", use_container_width=True):
-        if code.strip():
-            run_analysis("/explain", {"code": code, "task": "Explain", "language": lang}, "Explain", len(code))
-        else:
-            st.warning("Paste code first.")
-
-elif page == "debug":
-    inject_hero()
-    st.markdown("### 🐛 Debug Hunter")
-    st.caption("Find bugs, root causes, and get fixed code.")
-    code, lang = code_workspace("debug")
-    if st.button("⚡ HUNT BUGS", type="primary", use_container_width=True):
-        if code.strip():
-            run_analysis("/debug", {"code": code, "task": "Debug", "language": lang}, "Debug", len(code))
-        else:
-            st.warning("Paste code first.")
-
-elif page == "optimize":
-    inject_hero()
-    st.markdown("### ⚡ Performance Forge")
-    st.caption("Optimize for speed, memory, and best practices.")
-    code, lang = code_workspace("optimize")
-    if st.button("⚡ OPTIMIZE", type="primary", use_container_width=True):
-        if code.strip():
-            run_analysis("/optimize", {"code": code, "task": "Optimize", "language": lang}, "Optimize", len(code))
-        else:
-            st.warning("Paste code first.")
+elif page in CODE_TASKS:
+    render_standard_code_task(page)
 
 elif page == "refactor":
-    inject_hero()
-    st.markdown("### 🔧 Refactor Studio")
-    st.caption("Structured refactoring with trade-off analysis.")
-    code, lang = code_workspace("refactor")
-    goal = st.text_input("Refactoring goal", value="Improve readability, naming, and maintainability")
-    if st.button("⚡ REFACTOR", type="primary", use_container_width=True):
-        if code.strip():
+    page_heading(
+        "Refactor code",
+        "Improve structure and maintainability around a goal you define.",
+    )
+    refactor_code, refactor_language = code_workspace("refactor")
+    refactor_goal = st.text_input(
+        "Refactoring goal",
+        value="Improve readability, naming, and maintainability",
+        max_chars=300,
+    )
+    if st.button(
+        "Refactor code",
+        type="primary",
+        use_container_width=True,
+        key="refactor_submit",
+    ):
+        if validate_text(refactor_code, "source code") and validate_text(
+            refactor_goal, "refactoring goal", 300
+        ):
             run_analysis(
+                "refactor",
                 "/refactor",
-                {"code": code, "goal": goal, "language": lang},
+                {
+                    "code": refactor_code.strip(),
+                    "goal": refactor_goal.strip(),
+                    "language": refactor_language,
+                },
                 "Refactor",
-                len(code),
+                len(refactor_code.strip()),
             )
-        else:
-            st.warning("Paste code first.")
+    render_response("refactor")
 
 elif page == "chat":
-    inject_hero()
-    st.markdown("### 💬 Pair Programmer")
-    st.caption("Ask anything about your code — debugging hints, design, edge cases.")
-    code, lang = code_workspace("chat", 260)
-    question = st.text_area(
-        "Your question",
-        height=100,
-        placeholder="Why does this fail on empty input? How would you add caching?",
+    page_heading(
+        "Ask about code",
+        "Use Neural Forge as a pair programmer for design, edge cases, or implementation questions.",
     )
-    if st.button("⚡ ASK NEURAL FORGE", type="primary", use_container_width=True):
-        if code.strip() and question.strip():
+    chat_code, chat_language = code_workspace("chat", height=245)
+    question = st.text_area(
+        "Question",
+        height=110,
+        placeholder="For example: Why does this fail on empty input, and how should I test the fix?",
+        max_chars=2_000,
+    )
+    if st.button(
+        "Ask Neural Forge",
+        type="primary",
+        use_container_width=True,
+        key="chat_submit",
+    ):
+        if validate_text(chat_code, "source code") and validate_text(
+            question, "a question", 2_000
+        ):
             run_analysis(
+                "chat",
                 "/chat",
-                {"code": code, "question": question, "language": lang},
-                "Chat",
-                len(code),
+                {
+                    "code": chat_code.strip(),
+                    "question": question.strip(),
+                    "language": chat_language,
+                },
+                "Pair programming",
+                len(chat_code.strip()),
             )
-        else:
-            st.warning("Provide both code and a question.")
+    render_response("chat")
 
 elif page == "readme":
-    inject_hero()
-    st.markdown("### 📄 README Generator")
-    st.caption("Turn code or project notes into a production-ready README.")
-    code = st.text_area("Project code or description", height=300, placeholder="# main.py, package.json, or project overview...")
-    if st.button("⚡ GENERATE README", type="primary", use_container_width=True):
-        if code.strip():
+    page_heading(
+        "Generate a README",
+        "Turn project context, source code, or setup notes into structured documentation.",
+    )
+    project_context = st.text_area(
+        "Project context",
+        height=300,
+        placeholder=(
+            "Describe the project and paste important files or setup details. "
+            "Include the target audience, commands, and key features when known."
+        ),
+        help=f"Maximum {MAX_CODE_CHARS:,} characters.",
+    )
+    st.caption(f"{len(project_context):,} / {MAX_CODE_CHARS:,} characters")
+    if st.button(
+        "Generate README",
+        type="primary",
+        use_container_width=True,
+        key="readme_submit",
+    ):
+        if validate_text(project_context, "project context"):
             run_analysis(
+                "readme",
                 "/generate-readme",
-                {"code": code, "task": "README", "language": "auto-detect"},
+                {
+                    "code": project_context.strip(),
+                    "task": "README",
+                    "language": "auto-detect",
+                },
                 "README",
-                len(code),
+                len(project_context.strip()),
             )
-        else:
-            st.warning("Add content first.")
+    render_response("readme")
 
 elif page == "commit":
-    inject_hero()
-    st.markdown("### 📝 Commit Message Forge")
-    st.caption("Conventional Commits from your git diff.")
-    diff = st.text_area("Git diff", height=300, placeholder="git diff output...\n+added\n-removed")
-    if st.button("⚡ GENERATE COMMITS", type="primary", use_container_width=True):
-        if diff.strip():
-            t0 = time.time()
-            result = post("/commit-message", {"diff": diff})
-            if result:
-                add_history("Commits", len(diff), round(time.time() - t0, 2))
-                render_terminal_response(result, "COMMIT MESSAGES")
-        else:
-            st.warning("Paste a diff first.")
+    page_heading(
+        "Generate commit messages",
+        "Create ranked Conventional Commit options from a focused git diff.",
+    )
+    git_diff = st.text_area(
+        "Git diff",
+        height=290,
+        placeholder="Paste the output of `git diff` here.",
+        help=f"Maximum {MAX_DIFF_CHARS:,} characters.",
+    )
+    st.caption(f"{len(git_diff):,} / {MAX_DIFF_CHARS:,} characters")
+    if st.button(
+        "Generate commit messages",
+        type="primary",
+        use_container_width=True,
+        key="commit_submit",
+    ):
+        if validate_text(git_diff, "a git diff", MAX_DIFF_CHARS):
+            run_analysis(
+                "commit",
+                "/commit-message",
+                {"diff": git_diff.strip()},
+                "Commit messages",
+                len(git_diff.strip()),
+            )
+    render_response("commit")
 
 elif page == "complexity":
-    inject_hero()
-    st.markdown("### 📊 Complexity Analyzer")
-    st.caption("Big-O time and space analysis with bottlenecks.")
-    code, lang = code_workspace("complexity")
-    if st.button("⚡ ANALYZE BIG-O", type="primary", use_container_width=True):
-        if code.strip():
-            t0 = time.time()
-            result = post("/complexity", {"code": code, "language": lang})
-            if result:
-                add_history("Big-O", len(code), round(time.time() - t0, 2))
-                render_terminal_response(result, "COMPLEXITY REPORT")
-        else:
-            st.warning("Paste code first.")
+    page_heading(
+        "Analyze complexity",
+        "Estimate time and space complexity, identify bottlenecks, and compare improvements.",
+    )
+    complexity_code, complexity_language = code_workspace("complexity")
+    if st.button(
+        "Analyze complexity",
+        type="primary",
+        use_container_width=True,
+        key="complexity_submit",
+    ):
+        if validate_text(complexity_code, "source code"):
+            run_analysis(
+                "complexity",
+                "/complexity",
+                {
+                    "code": complexity_code.strip(),
+                    "language": complexity_language,
+                },
+                "Complexity analysis",
+                len(complexity_code.strip()),
+            )
+    render_response("complexity")
 
 elif page == "repo":
-    inject_hero()
-    st.markdown("### 🗂️ Repo Architecture Scanner")
-    st.caption("Paste up to 5 files — get architecture, data flow, and improvements.")
-    files = {}
-    tabs = st.tabs([f"File {i}" for i in range(1, 6)])
-    for i, tab in enumerate(tabs, 1):
+    page_heading(
+        "Summarize a repository",
+        "Review up to five representative files for architecture, data flow, and improvements.",
+    )
+    repository_files: dict[str, str] = {}
+    incomplete_files = False
+    tabs = st.tabs([f"File {index}" for index in range(1, 6)])
+    for index, tab in enumerate(tabs, start=1):
         with tab:
-            fname = st.text_input("Filename", key=f"repo_fn_{i}", placeholder="backend/main.py")
-            content = st.text_area("Content", key=f"repo_ct_{i}", height=140, placeholder="# paste file...")
-            if fname.strip() and content.strip():
-                files[fname.strip()] = content
-    if st.button("⚡ SCAN REPOSITORY", type="primary", use_container_width=True):
-        if files:
-            total = sum(len(v) for v in files.values())
-            run_analysis("/repo-summary", {"files": files}, f"Repo ({len(files)} files)", total)
+            filename = st.text_input(
+                "File path",
+                key=f"repo_filename_{index}",
+                placeholder="backend/main.py",
+                max_chars=200,
+            )
+            content = st.text_area(
+                "File content",
+                key=f"repo_content_{index}",
+                height=145,
+                placeholder="Paste this file's content.",
+            )
+            if bool(filename.strip()) != bool(content.strip()):
+                incomplete_files = True
+            if filename.strip() and content.strip():
+                repository_files[filename.strip()] = content.strip()
+
+    total_repository_chars = sum(len(content) for content in repository_files.values())
+    st.caption(
+        f"{len(repository_files)} files selected · "
+        f"{total_repository_chars:,} / {MAX_CODE_CHARS:,} total characters"
+    )
+    if st.button(
+        "Summarize repository",
+        type="primary",
+        use_container_width=True,
+        key="repo_submit",
+    ):
+        if incomplete_files:
+            st.warning("Each included file needs both a path and content.")
+        elif not repository_files:
+            st.warning("Add at least one file before submitting.")
+        elif total_repository_chars > MAX_CODE_CHARS:
+            st.warning(
+                f"The combined file content exceeds the {MAX_CODE_CHARS:,}-character limit."
+            )
         else:
-            st.warning("Add at least one file with name and content.")
+            run_analysis(
+                "repo",
+                "/repo-summary",
+                {"files": repository_files},
+                "Repository summary",
+                total_repository_chars,
+            )
+    render_response("repo")
 
 elif page == "upload":
-    inject_hero()
-    st.markdown("### 📁 File Upload Analyzer")
-    st.caption("Drop source files — .py, .js, .ts, .java, .go, .rs, .cpp, .sql, .md")
-    task = st.selectbox(
-        "Analysis mode",
-        ["Explain this code", "Debug this code", "Optimize this code", "Analyze complexity"],
+    page_heading(
+        "Upload a source file",
+        "Analyze one text-based source file without pasting it into the editor.",
     )
-    uploaded = st.file_uploader(
+    upload_task = st.selectbox(
+        "Analysis mode",
+        [
+            "Explain this code",
+            "Debug this code",
+            "Optimize this code",
+            "Analyze complexity",
+        ],
+    )
+    uploaded_file = st.file_uploader(
         "Source file",
         type=["py", "js", "ts", "java", "go", "cpp", "c", "rs", "txt", "md", "sql"],
+        help="Text files only; maximum 200 KB.",
     )
-    if uploaded:
-        preview = uploaded.getvalue().decode("utf-8", errors="ignore")[:8000]
-        st.markdown('<div class="glass-panel"><h3>📄 PREVIEW</h3></div>', unsafe_allow_html=True)
-        st.code(preview, language=uploaded.name.split(".")[-1] if "." in uploaded.name else "text")
-    if uploaded and st.button("⚡ ANALYZE FILE", type="primary", use_container_width=True):
-        with st.spinner("Uploading to neural core..."):
-            try:
-                t0 = time.time()
-                resp = requests.post(
-                    f"{BACKEND_URL}/upload-snippet",
-                    files={"file": (uploaded.name, uploaded.getvalue(), "text/plain")},
-                    params={"task": task},
-                    timeout=90,
-                )
-                resp.raise_for_status()
-                result = resp.json().get("response")
-                if result:
-                    add_history(f"Upload {uploaded.name}", len(preview), round(time.time() - t0, 2))
-                    render_terminal_response(result, f"FILE: {uploaded.name}")
-            except Exception as e:
-                st.error(f"Upload failed: {e}")
+    upload_content = b""
+    upload_preview = ""
+    if uploaded_file is not None:
+        upload_content = uploaded_file.getvalue()
+        upload_preview = upload_content.decode("utf-8", errors="replace")
+        st.caption(f"{uploaded_file.name} · {len(upload_content):,} bytes")
+        with st.expander("File preview", expanded=True):
+            st.code(
+                upload_preview[:8_000],
+                language=(
+                    uploaded_file.name.rsplit(".", 1)[-1]
+                    if "." in uploaded_file.name
+                    else "text"
+                ),
+            )
 
-# Footer
+    if st.button(
+        "Analyze file",
+        type="primary",
+        use_container_width=True,
+        key="upload_submit",
+        disabled=uploaded_file is None,
+    ):
+        if not upload_content:
+            st.warning("Choose a non-empty source file.")
+        elif len(upload_content) > MAX_UPLOAD_BYTES:
+            st.warning(
+                f"The selected file is too large ({len(upload_content):,} bytes). "
+                f"The limit is {MAX_UPLOAD_BYTES:,} bytes."
+            )
+        elif len(upload_preview) > MAX_CODE_CHARS:
+            st.warning(
+                f"The decoded file exceeds the {MAX_CODE_CHARS:,}-character analysis limit."
+            )
+        else:
+            run_upload(
+                "upload",
+                uploaded_file.name,
+                upload_content,
+                upload_task,
+                len(upload_preview),
+            )
+    render_response("upload")
+
 st.markdown(
     """
-    <div style="text-align:center;padding:24px 0 8px;font-family:JetBrains Mono;font-size:0.65rem;color:#475569;">
-        NEURAL FORGE · FastAPI + Streamlit + Gemini · Built for AI-powered engineering workflows
+    <div class="nf-footer">
+      NEURAL FORGE // FastAPI + Streamlit + Google Gemini + Docker // AI DEVELOPER COCKPIT
     </div>
     """,
     unsafe_allow_html=True,
